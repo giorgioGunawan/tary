@@ -5,6 +5,7 @@ const { google } = require('googleapis');
 const crypto = require('crypto');
 const https = require('https');
 const { URL } = require('url');
+const { execSync } = require('child_process');
 const { 
   getUserByPhone, 
   saveCalendarTokens, 
@@ -186,49 +187,43 @@ async function getCalendarEvents(phoneNumber) {
       console.log(`[DEBUG] Request URL: ${fullUrl}`);
       console.log(`[DEBUG] Authorization header: Bearer ${credentials.access_token.substring(0, 20)}...`);
       
-      // Try using Node's built-in fetch (available in Node 18+)
-      console.log(`[DEBUG] Using Node fetch API (built-in)...`);
+      // Since ALL Node.js HTTP methods hang but curl works, use curl directly
+      console.log(`[DEBUG] All Node.js HTTP methods hang in this environment - using curl directly...`);
       
-      const fetchPromise = (async () => {
-        console.log(`[DEBUG] Starting fetch call...`);
-        const response = await fetch(fullUrl, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${credentials.access_token}`,
-            'Content-Type': 'application/json'
-          },
-          signal: AbortSignal.timeout(10000) // 10 second timeout
+      try {
+        // Use curl since it's the only thing that works
+        const curlCommand = [
+          'curl',
+          '-s',
+          '-H', `Authorization: Bearer ${credentials.access_token}`,
+          '-H', 'Content-Type: application/json',
+          '--max-time', '10',
+          `"${fullUrl}"`
+        ].join(' ');
+        
+        console.log(`[DEBUG] Executing curl command...`);
+        console.log(`[DEBUG] Command: curl -s -H "Authorization: Bearer ***" "${fullUrl.substring(0, 80)}..."`);
+        
+        const output = execSync(curlCommand, {
+          encoding: 'utf8',
+          timeout: 12000, // 12 second timeout
+          maxBuffer: 10 * 1024 * 1024 // 10MB buffer
         });
         
-        console.log(`[DEBUG] Fetch response received, status: ${response.status}`);
+        console.log(`[DEBUG] Curl completed, output length: ${output.length} bytes`);
         
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error(`[DEBUG] Fetch error response:`, errorText.substring(0, 200));
-          throw new Error(`HTTP ${response.status}: ${errorText.substring(0, 100)}`);
-        }
-        
-        console.log(`[DEBUG] Parsing JSON response...`);
-        const data = await response.json();
+        const data = JSON.parse(output);
         console.log(`[DEBUG] JSON parsed, items count: ${data.items ? data.items.length : 0}`);
         
-        return data;
-      })();
-      
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => {
-          console.error(`[DEBUG] Overall timeout after 15 seconds`);
-          reject(new Error('Overall timeout after 15s'));
-        }, 15000)
-      );
-      
-      console.log(`[DEBUG] Waiting for fetch response...`);
-      const data = await Promise.race([fetchPromise, timeoutPromise]);
-      
-      console.log(`[DEBUG] Fetch completed successfully`);
-      console.log(`[DEBUG] Items count: ${data.items ? data.items.length : 0}`);
-      
-      return data.items || [];
+        return data.items || [];
+      } catch (curlError) {
+        console.error(`[DEBUG] Curl execution failed:`, {
+          message: curlError.message,
+          stderr: curlError.stderr ? curlError.stderr.toString() : null,
+          stdout: curlError.stdout ? curlError.stdout.toString().substring(0, 200) : null
+        });
+        throw new Error(`Curl failed: ${curlError.message}`);
+      }
     } catch (httpError) {
       console.error(`[DEBUG] Direct HTTP call failed, trying googleapis library:`, {
         message: httpError.message,
