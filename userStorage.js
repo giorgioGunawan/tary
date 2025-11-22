@@ -8,33 +8,68 @@ if (!process.env.POSTGRES_URL && !process.env.DATABASE_URL) {
   console.warn('[WARNING] No POSTGRES_URL or DATABASE_URL found. Database operations will fail.');
   console.warn('[WARNING] Please add POSTGRES_URL environment variable in Vercel settings.');
 } else {
-  console.log('[INFO] Database connection string found:', 
-    (process.env.POSTGRES_URL || process.env.DATABASE_URL) ? 'Yes' : 'No'
+  const dbUrl = process.env.POSTGRES_URL || process.env.DATABASE_URL;
+  console.log('[INFO] Database connection string found: Yes');
+  // Log first few chars for debugging (don't log full URL for security)
+  if (dbUrl) {
+    console.log('[INFO] Database URL format:', dbUrl.substring(0, 20) + '...');
+  }
+}
+
+// Helper function to execute SQL with timeout and better error handling
+async function executeQuery(queryFn, timeoutMs = 10000) {
+  const dbUrl = process.env.POSTGRES_URL || process.env.DATABASE_URL;
+  if (!dbUrl) {
+    throw new Error('Database connection string not found. Please set POSTGRES_URL or DATABASE_URL environment variable.');
+  }
+  
+  // Create the query promise
+  let queryPromise;
+  try {
+    queryPromise = queryFn();
+    
+    // Verify it's a promise
+    if (!queryPromise || typeof queryPromise.then !== 'function') {
+      throw new Error('Query function did not return a promise');
+    }
+  } catch (error) {
+    throw new Error(`Failed to create database query: ${error.message}`);
+  }
+  
+  // Add timeout
+  const timeoutPromise = new Promise((_, reject) => 
+    setTimeout(() => reject(new Error(`Database query timeout after ${timeoutMs}ms`)), timeoutMs)
   );
+  
+  try {
+    return await Promise.race([queryPromise, timeoutPromise]);
+  } catch (error) {
+    // Enhance error message with connection info
+    if (error.message.includes('timeout')) {
+      throw new Error(`Database query timed out. Check if database is accessible and connection string is correct. Original error: ${error.message}`);
+    }
+    throw error;
+  }
 }
 
 // Initialize database table (idempotent - safe to call multiple times)
 async function initDatabase() {
   try {
     console.log('[DEBUG] Initializing database table...');
-    // Add timeout for table creation
-    const createTablePromise = sql`
-      CREATE TABLE IF NOT EXISTS users (
-        phone_number VARCHAR(20) PRIMARY KEY,
-        google_calendar_tokens JSONB,
-        calendar_linked BOOLEAN DEFAULT FALSE,
-        calendar_linked_at TIMESTAMP,
-        pending_oauth VARCHAR(255),
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      )
-    `;
-    
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Database initialization timeout')), 10000)
+    await executeQuery(() => 
+      sql`
+        CREATE TABLE IF NOT EXISTS users (
+          phone_number VARCHAR(20) PRIMARY KEY,
+          google_calendar_tokens JSONB,
+          calendar_linked BOOLEAN DEFAULT FALSE,
+          calendar_linked_at TIMESTAMP,
+          pending_oauth VARCHAR(255),
+          updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+      `,
+      10000 // 10 second timeout for initialization
     );
-    
-    await Promise.race([createTablePromise, timeoutPromise]);
     console.log('[DEBUG] Database table initialized successfully');
   } catch (error) {
     console.error('[DEBUG] Error initializing database:', {
@@ -50,11 +85,7 @@ async function initDatabase() {
 async function testConnection() {
   try {
     console.log('[DEBUG] Testing database connection...');
-    const testPromise = sql`SELECT 1 as test`;
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Connection test timeout')), 5000)
-    );
-    await Promise.race([testPromise, timeoutPromise]);
+    await executeQuery(() => sql`SELECT 1 as test`, 5000);
     console.log('[DEBUG] Database connection test successful');
     return true;
   } catch (error) {
@@ -80,19 +111,12 @@ testConnection().catch(err => {
 async function getUserByPhone(phoneNumber) {
   try {
     console.log(`[DEBUG] getUserByPhone called for ${phoneNumber}`);
-    console.log(`[DEBUG] Checking database connection...`);
+    console.log(`[DEBUG] Executing SQL query...`);
     
-    // Add timeout wrapper
-    const queryPromise = sql`
-      SELECT * FROM users WHERE phone_number = ${phoneNumber}
-    `;
-    
-    const timeoutPromise = new Promise((_, reject) => 
-      setTimeout(() => reject(new Error('Database query timeout after 10s')), 10000)
+    const result = await executeQuery(() => 
+      sql`SELECT * FROM users WHERE phone_number = ${phoneNumber}`
     );
     
-    console.log(`[DEBUG] Executing SQL query...`);
-    const result = await Promise.race([queryPromise, timeoutPromise]);
     console.log(`[DEBUG] Query completed, rows: ${result.rows ? result.rows.length : 0}`);
     
     if (result.rows.length === 0) {
@@ -153,33 +177,35 @@ async function saveUser(phoneNumber, userData) {
       ? JSON.stringify(userData.googleCalendarTokens)
       : null;
     
-    await sql`
-      INSERT INTO users (
-        phone_number,
-        google_calendar_tokens,
-        calendar_linked,
-        calendar_linked_at,
-        pending_oauth,
-        updated_at,
-        created_at
-      )
-      VALUES (
-        ${phoneNumber},
-        ${tokensJson}::jsonb,
-        ${userData.calendarLinked || false},
-        ${userData.calendarLinkedAt || null},
-        ${userData.pendingOAuth || null},
-        ${now},
-        ${now}
-      )
-      ON CONFLICT (phone_number)
-      DO UPDATE SET
-        google_calendar_tokens = COALESCE(${tokensJson}::jsonb, users.google_calendar_tokens),
-        calendar_linked = COALESCE(${userData.calendarLinked}, users.calendar_linked),
-        calendar_linked_at = COALESCE(${userData.calendarLinkedAt}, users.calendar_linked_at),
-        pending_oauth = COALESCE(${userData.pendingOAuth}, users.pending_oauth),
-        updated_at = ${now}
-    `;
+    await executeQuery(() => 
+      sql`
+        INSERT INTO users (
+          phone_number,
+          google_calendar_tokens,
+          calendar_linked,
+          calendar_linked_at,
+          pending_oauth,
+          updated_at,
+          created_at
+        )
+        VALUES (
+          ${phoneNumber},
+          ${tokensJson}::jsonb,
+          ${userData.calendarLinked || false},
+          ${userData.calendarLinkedAt || null},
+          ${userData.pendingOAuth || null},
+          ${now},
+          ${now}
+        )
+        ON CONFLICT (phone_number)
+        DO UPDATE SET
+          google_calendar_tokens = COALESCE(${tokensJson}::jsonb, users.google_calendar_tokens),
+          calendar_linked = COALESCE(${userData.calendarLinked}, users.calendar_linked),
+          calendar_linked_at = COALESCE(${userData.calendarLinkedAt}, users.calendar_linked_at),
+          pending_oauth = COALESCE(${userData.pendingOAuth}, users.pending_oauth),
+          updated_at = ${now}
+      `
+    );
     
     // Return updated user
     return await getUserByPhone(phoneNumber);
@@ -214,11 +240,13 @@ async function setPendingOAuth(phoneNumber, state) {
 // Clear pending OAuth state
 async function clearPendingOAuth(phoneNumber) {
   try {
-    await sql`
-      UPDATE users 
-      SET pending_oauth = NULL, updated_at = CURRENT_TIMESTAMP
-      WHERE phone_number = ${phoneNumber}
-    `;
+    await executeQuery(() => 
+      sql`
+        UPDATE users 
+        SET pending_oauth = NULL, updated_at = CURRENT_TIMESTAMP
+        WHERE phone_number = ${phoneNumber}
+      `
+    );
   } catch (error) {
     console.error(`[DEBUG] Error clearing pending OAuth for ${phoneNumber}:`, error);
     throw error;
@@ -228,16 +256,18 @@ async function clearPendingOAuth(phoneNumber) {
 // Get all users (for admin dashboard)
 async function getAllUsers() {
   try {
-    const result = await sql`
-      SELECT 
-        phone_number,
-        calendar_linked,
-        calendar_linked_at,
-        updated_at,
-        created_at
-      FROM users
-      ORDER BY updated_at DESC
-    `;
+    const result = await executeQuery(() => 
+      sql`
+        SELECT 
+          phone_number,
+          calendar_linked,
+          calendar_linked_at,
+          updated_at,
+          created_at
+        FROM users
+        ORDER BY updated_at DESC
+      `
+    );
     
     return result.rows.map(row => ({
       phoneNumber: row.phone_number,
