@@ -36,17 +36,40 @@ const googleClientId = process.env.GOOGLE_CLIENT_ID;
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
 
 // Determine callback URL (use VERCEL_URL in production, localhost for dev)
-const baseUrl = process.env.VERCEL_URL 
-  ? `https://${process.env.VERCEL_URL}` 
-  : `http://localhost:${port}`;
+// VERCEL_URL doesn't include protocol, so we add https://
+// You can also set CALLBACK_URL directly if needed
+let baseUrl;
+if (process.env.CALLBACK_URL) {
+  // Allow explicit callback URL override
+  baseUrl = process.env.CALLBACK_URL.replace('/auth/google/callback', '');
+} else if (process.env.VERCEL_URL) {
+  // Vercel provides VERCEL_URL without protocol
+  baseUrl = `https://${process.env.VERCEL_URL}`;
+} else {
+  baseUrl = `http://localhost:${port}`;
+}
 const callbackUrl = `${baseUrl}/auth/google/callback`;
 
+// Log callback URL for debugging (remove in production if sensitive)
+console.log('OAuth Callback URL:', callbackUrl);
+
 // Create Google OAuth2 client
+// Note: callbackUrl must match exactly what's in Google Cloud Console
 const oauth2Client = new google.auth.OAuth2(
   googleClientId,
   googleClientSecret,
   callbackUrl
 );
+
+// Debug endpoint to check callback URL (remove in production if needed)
+app.get('/debug/callback-url', (req, res) => {
+  res.json({
+    callbackUrl,
+    baseUrl,
+    vercelUrl: process.env.VERCEL_URL,
+    customCallbackUrl: process.env.CALLBACK_URL
+  });
+});
 
 // Google Calendar scopes
 const SCOPES = ['https://www.googleapis.com/auth/calendar.readonly'];
@@ -249,9 +272,17 @@ app.get('/auth/google/callback', async (req, res) => {
       return res.status(400).send('Authorization code not provided');
     }
 
+    if (!state) {
+      return res.status(400).send('State parameter missing');
+    }
+
     // Parse state to get phone number
     const [stateToken, phoneNumber] = state.split(':');
     
+    if (!phoneNumber) {
+      return res.status(400).send('Invalid state parameter');
+    }
+
     // Verify state matches pending OAuth
     const pendingOAuth = await getUserByPhone(phoneNumber);
     if (!pendingOAuth || !pendingOAuth.pendingOAuth || pendingOAuth.pendingOAuth !== stateToken) {
@@ -265,31 +296,13 @@ app.get('/auth/google/callback', async (req, res) => {
     await saveCalendarTokens(phoneNumber, tokens);
     await clearPendingOAuth(phoneNumber);
 
-    // Try to send WhatsApp confirmation (if we have phoneNumberId)
-    // Note: You might need to store phoneNumberId per user or get it from webhook
-    res.send(`
-      <html>
-        <head><title>Calendar Connected</title></head>
-        <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-          <h1>✅ Calendar Connected Successfully!</h1>
-          <p>Your Google Calendar has been linked to your WhatsApp number: ${phoneNumber}</p>
-          <p>You can now use calendar commands in WhatsApp.</p>
-          <p>Try sending "/calendar" in WhatsApp to see your upcoming events.</p>
-        </body>
-      </html>
-    `);
+    // Redirect to frontend with success message
+    const frontendUrl = process.env.FRONTEND_URL || 'https://tary-fe.vercel.app';
+    res.redirect(`${frontendUrl}?success=true&phone=${phoneNumber}`);
   } catch (error) {
     console.error('OAuth callback error:', error);
-    res.status(500).send(`
-      <html>
-        <head><title>Error</title></head>
-        <body style="font-family: Arial, sans-serif; text-align: center; padding: 50px;">
-          <h1>❌ Authentication Failed</h1>
-          <p>There was an error connecting your calendar. Please try again.</p>
-          <p>Error: ${error.message}</p>
-        </body>
-      </html>
-    `);
+    const frontendUrl = process.env.FRONTEND_URL || 'https://tary-fe.vercel.app';
+    res.redirect(`${frontendUrl}?error=${encodeURIComponent(error.message)}`);
   }
 });
 
