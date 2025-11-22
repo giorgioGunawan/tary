@@ -449,6 +449,35 @@ app.get('/api/db/health', async (req, res) => {
   }
 });
 
+// Debug endpoint: View storage file contents
+app.get('/api/debug/storage', async (req, res) => {
+  try {
+    const { getStorageData, STORAGE_FILE } = require('./userStorage');
+    const fs = require('fs').promises;
+    
+    const storageData = await getStorageData();
+    
+    // Try to read the actual file
+    let fileContents = null;
+    try {
+      fileContents = await fs.readFile(STORAGE_FILE, 'utf8');
+    } catch (error) {
+      fileContents = `Error reading file: ${error.message}`;
+    }
+    
+    res.json({
+      storageFile: STORAGE_FILE,
+      fileContents: fileContents,
+      cacheData: storageData.allUsers,
+      cacheKeys: storageData.cacheKeys,
+      cacheSize: storageData.cacheSize
+    });
+  } catch (error) {
+    console.error('Debug storage endpoint failed:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Admin endpoint: Get all users (for admin dashboard)
 app.get('/api/users', async (req, res) => {
   try {

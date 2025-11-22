@@ -61,11 +61,15 @@ async function getUserByPhone(phoneNumber) {
   try {
     await ensureInitialized();
     console.log(`[DEBUG] getUserByPhone called for ${phoneNumber}`);
+    console.log(`[DEBUG] Storage file: ${STORAGE_FILE}`);
+    console.log(`[DEBUG] Cache keys: ${Object.keys(usersCache).join(', ') || '(empty)'}`);
+    console.log(`[DEBUG] Total users in cache: ${Object.keys(usersCache).length}`);
     
     const user = usersCache[phoneNumber] || null;
     
     if (!user) {
       console.log(`[DEBUG] No user found for ${phoneNumber}`);
+      console.log(`[DEBUG] Available phone numbers: ${Object.keys(usersCache).join(', ') || '(none)'}`);
       return null;
     }
     
@@ -179,6 +183,17 @@ async function getAllUsers() {
   }
 }
 
+// Get raw storage data (for debugging)
+async function getStorageData() {
+  await ensureInitialized();
+  return {
+    storageFile: STORAGE_FILE,
+    cacheSize: Object.keys(usersCache).length,
+    cacheKeys: Object.keys(usersCache),
+    allUsers: usersCache
+  };
+}
+
 module.exports = {
   getUserByPhone,
   saveUser,
@@ -186,5 +201,7 @@ module.exports = {
   getPendingOAuth,
   setPendingOAuth,
   clearPendingOAuth,
-  getAllUsers
+  getAllUsers,
+  getStorageData,
+  STORAGE_FILE
 };
