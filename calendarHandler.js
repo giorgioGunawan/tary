@@ -19,7 +19,7 @@ async function processCalendarMessage(userMessage, phoneNumber, calendarFunction
     if (intent.action === 'unknown') {
       return {
         success: false,
-        response: "I'm not sure what you'd like me to do with your calendar. Try asking me to:\n• Show your calendar (e.g., 'what do I have on Friday?')\n• Create an event (e.g., 'schedule a meeting tomorrow at 2pm')\n• Update an event (e.g., 'move my fitness class to 3pm')\n• Delete an event (e.g., 'cancel my dentist appointment')"
+        response: "I'm not sure what you'd like me to do with your calendar. Try asking me to:\n\n- Show your calendar (e.g., what do I have on Friday?)\n- Create an event (e.g., schedule a meeting tomorrow at 2pm)\n- Update an event (e.g., move my fitness class to 3pm)\n- Delete an event (e.g., cancel my dentist appointment)"
       };
     }
     
@@ -75,32 +75,42 @@ async function handleReadEvents(phoneNumber, parameters, calendarFunctions) {
   try {
     const { getCalendarEvents } = calendarFunctions;
     
-    // Calculate date range
+    // Calculate date range - use Sydney timezone
     let timeMin, timeMax;
     const now = new Date();
+    const sydneyNow = new Date(now.toLocaleString('en-US', { timeZone: 'Australia/Sydney' }));
     
-    if (parameters.specificDay) {
-      // Get events for a specific day
-      const targetDate = getNextDayOfWeek(parameters.specificDay);
+    if (parameters.date) {
+      // Specific date provided by AI (e.g., "2024-11-24")
+      const targetDate = new Date(parameters.date + 'T00:00:00');
       timeMin = new Date(targetDate);
       timeMin.setHours(0, 0, 0, 0);
       timeMax = new Date(targetDate);
       timeMax.setHours(23, 59, 59, 999);
+      console.log(`[CALENDAR_HANDLER] Fetching events for specific date: ${parameters.date}`);
+    } else if (parameters.specificDay) {
+      // Get events for a specific day of week
+      const targetDate = getNextDayOfWeek(parameters.specificDay, sydneyNow);
+      timeMin = new Date(targetDate);
+      timeMin.setHours(0, 0, 0, 0);
+      timeMax = new Date(targetDate);
+      timeMax.setHours(23, 59, 59, 999);
+      console.log(`[CALENDAR_HANDLER] Fetching events for ${parameters.specificDay}: ${targetDate.toISOString().split('T')[0]}`);
     } else if (parameters.dateRange === 'week') {
       // Get events for next 7 days
-      timeMin = now;
-      timeMax = new Date(now);
+      timeMin = sydneyNow;
+      timeMax = new Date(sydneyNow);
       timeMax.setDate(timeMax.getDate() + 7);
     } else if (parameters.dateRange === 'month') {
       // Get events for next 30 days
-      timeMin = now;
-      timeMax = new Date(now);
+      timeMin = sydneyNow;
+      timeMax = new Date(sydneyNow);
       timeMax.setDate(timeMax.getDate() + 30);
     } else {
       // Default: today's events
-      timeMin = new Date(now);
+      timeMin = new Date(sydneyNow);
       timeMin.setHours(0, 0, 0, 0);
-      timeMax = new Date(now);
+      timeMax = new Date(sydneyNow);
       timeMax.setHours(23, 59, 59, 999);
     }
     
@@ -268,25 +278,33 @@ async function handleDeleteEvent(phoneNumber, parameters, calendarFunctions) {
 
 /**
  * Get the next occurrence of a day of the week
+ * @param {string} dayName - Name of the day (e.g., "monday", "friday")
+ * @param {Date} fromDate - Starting date (defaults to now in Sydney timezone)
  */
-function getNextDayOfWeek(dayName) {
+function getNextDayOfWeek(dayName, fromDate = null) {
   const days = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
   const targetDay = days.indexOf(dayName.toLowerCase());
   
   if (targetDay === -1) {
-    return new Date(); // Invalid day, return today
+    console.error(`[CALENDAR_HANDLER] Invalid day name: ${dayName}`);
+    return fromDate || new Date(); // Invalid day, return today
   }
   
-  const today = new Date();
-  const currentDay = today.getDay();
+  // Use provided date or current Sydney time
+  const startDate = fromDate || new Date(new Date().toLocaleString('en-US', { timeZone: 'Australia/Sydney' }));
+  const currentDay = startDate.getDay();
+  
+  console.log(`[CALENDAR_HANDLER] Finding next ${dayName} from ${startDate.toISOString().split('T')[0]} (current day: ${days[currentDay]})`);
   
   let daysUntilTarget = targetDay - currentDay;
   if (daysUntilTarget <= 0) {
     daysUntilTarget += 7; // Next week
   }
   
-  const result = new Date(today);
+  const result = new Date(startDate);
   result.setDate(result.getDate() + daysUntilTarget);
+  
+  console.log(`[CALENDAR_HANDLER] Next ${dayName} is: ${result.toISOString().split('T')[0]}`);
   
   return result;
 }

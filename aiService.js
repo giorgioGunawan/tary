@@ -79,7 +79,30 @@ async function parseCalendarIntent(userMessage) {
     
     console.log(`[AI] API key exists: ${process.env.OPENAI_API_KEY.substring(0, 10)}...`);
     
+    // Get current date/time in Australia/Sydney timezone
+    const now = new Date();
+    const sydneyTime = new Date(now.toLocaleString('en-US', { timeZone: 'Australia/Sydney' }));
+    const dayOfWeek = sydneyTime.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'Australia/Sydney' });
+    const currentDate = sydneyTime.toISOString().split('T')[0];
+    const currentTime = sydneyTime.toTimeString().split(' ')[0];
+    
+    // Calculate tomorrow
+    const tomorrow = new Date(sydneyTime);
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const tomorrowDate = tomorrow.toISOString().split('T')[0];
+    const tomorrowDay = tomorrow.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'Australia/Sydney' });
+    
+    console.log(`[AI] Current context: ${dayOfWeek}, ${currentDate} ${currentTime} (Sydney time)`);
+    console.log(`[AI] Tomorrow will be: ${tomorrowDay}, ${tomorrowDate}`);
+    
     const systemPrompt = `You are a calendar assistant that interprets user requests and converts them into structured calendar operations.
+
+IMPORTANT - Current Date/Time Context:
+- TODAY is ${dayOfWeek}, ${currentDate}
+- Current time: ${currentTime}
+- TOMORROW is ${tomorrowDay}, ${tomorrowDate}
+- Use 24-hour format for times in ISO strings
+- All dates/times are in Australia/Sydney timezone
 
 Your job is to analyze the user's message and respond with a JSON object containing:
 - action: One of ["read_events", "create_event", "update_event", "delete_event", "unknown"]
@@ -88,13 +111,13 @@ Your job is to analyze the user's message and respond with a JSON object contain
 For "read_events":
 - date: ISO date string or null for "today"
 - dateRange: "day", "week", "month", or null
-- specificDay: day name like "monday", "friday", etc.
+- specificDay: day name like "monday", "friday", etc. (only use if user specifies a day name)
 
 For "create_event":
 - summary: Event title/description
 - location: Event location (if mentioned)
-- startDateTime: ISO datetime string
-- endDateTime: ISO datetime string (infer 1 hour if not specified)
+- startDateTime: FULL ISO datetime string (e.g., "2024-11-23T14:00:00")
+- endDateTime: FULL ISO datetime string (infer 1 hour duration if not specified)
 - description: Additional details
 
 For "update_event":
@@ -104,31 +127,37 @@ For "update_event":
 For "delete_event":
 - searchQuery: Keywords to find the event to delete
 
-Date/time parsing rules:
-- "today" = current date
-- "tomorrow" = current date + 1
-- "friday", "monday", etc. = next occurrence of that day
-- "next friday" = next week's friday
-- "2pm", "14:00" = today at that time
-- "friday 2pm" = next friday at 2pm
-- "thursday at 2pm" = next thursday at 2pm
+Date/time parsing rules (relative to TODAY = ${currentDate}):
+- "today" = ${currentDate}
+- "tomorrow" = ${tomorrowDate}
+- "friday", "monday", etc. = next occurrence of that day (calculate from ${dayOfWeek})
+- "next friday" = the friday of next week
+- "2pm" or "14:00" = today at that time → ${currentDate}T14:00:00
+- "tomorrow at 2pm" = ${tomorrowDate}T14:00:00
+- When user mentions a day of week, calculate the next occurrence from today (${dayOfWeek})
 
-Current date for reference: ${new Date().toISOString().split('T')[0]}
-Current time for reference: ${new Date().toTimeString().split(' ')[0]}
+CRITICAL: Always use FULL ISO datetime format (YYYY-MM-DDTHH:MM:SS) for startDateTime and endDateTime.
+CRITICAL: Calculate exact dates based on today being ${dayOfWeek}, ${currentDate}.
 
-Examples:
+Examples (given TODAY = ${dayOfWeek}, ${currentDate}, TOMORROW = ${tomorrowDate}):
 
 User: "what do I have on friday?"
 Response: {"action": "read_events", "parameters": {"specificDay": "friday", "dateRange": "day"}}
 
+User: "what do I have tomorrow?"
+Response: {"action": "read_events", "parameters": {"date": "${tomorrowDate}", "dateRange": "day"}}
+
 User: "show me my calendar for next week"
 Response: {"action": "read_events", "parameters": {"dateRange": "week"}}
 
-User: "schedule a fitness class at surry hills on thursday 2pm"
-Response: {"action": "create_event", "parameters": {"summary": "Fitness class", "location": "Surry Hills", "startDateTime": "2024-11-28T14:00:00", "endDateTime": "2024-11-28T15:00:00"}}
+User: "schedule a fitness class at surry hills tomorrow at 2pm"
+Response: {"action": "create_event", "parameters": {"summary": "Fitness class", "location": "Surry Hills", "startDateTime": "${tomorrowDate}T14:00:00", "endDateTime": "${tomorrowDate}T15:00:00"}}
 
 User: "book me a meeting with john tomorrow at 10am for 30 minutes"
-Response: {"action": "create_event", "parameters": {"summary": "Meeting with John", "startDateTime": "2024-11-23T10:00:00", "endDateTime": "2024-11-23T10:30:00"}}
+Response: {"action": "create_event", "parameters": {"summary": "Meeting with John", "startDateTime": "${tomorrowDate}T10:00:00", "endDateTime": "${tomorrowDate}T10:30:00"}}
+
+User: "schedule lunch today at 1pm"
+Response: {"action": "create_event", "parameters": {"summary": "Lunch", "startDateTime": "${currentDate}T13:00:00", "endDateTime": "${currentDate}T14:00:00"}}
 
 User: "move my fitness class to 3pm"
 Response: {"action": "update_event", "parameters": {"searchQuery": "fitness class", "updates": {"startDateTime": "15:00"}}}
@@ -204,15 +233,48 @@ async function generateResponse(action, result, parameters) {
   try {
     console.log(`[AI] Generating response for action: ${action}`);
     
+    // Get current date/time context for response generation
+    const now = new Date();
+    const sydneyTime = new Date(now.toLocaleString('en-US', { timeZone: 'Australia/Sydney' }));
+    const dayOfWeek = sydneyTime.toLocaleDateString('en-US', { weekday: 'long', timeZone: 'Australia/Sydney' });
+    const currentDate = sydneyTime.toISOString().split('T')[0];
+    
     const systemPrompt = `You are a friendly calendar assistant. Generate a concise, natural response based on the calendar operation performed.
 
-Keep responses brief and friendly. Use emojis sparingly (📅 for calendar, ✅ for success, ❌ for errors).
+Current context: TODAY is ${dayOfWeek}, ${currentDate}
 
-For read_events: Summarize the events in a clear list format.
-For create_event: Confirm what was created with key details.
-For update_event: Confirm what was changed.
-For delete_event: Confirm what was deleted.
-For errors: Explain what went wrong in a helpful way.`;
+IMPORTANT WhatsApp Formatting Rules:
+- DO NOT use markdown formatting (no ** for bold, no __ for italic, no [] for links)
+- DO NOT mention timezones (never say "Australia/Sydney timezone" or any timezone)
+- DO NOT use markdown links like [text](url) - just write plain text
+- Keep everything simple and plain text
+- Use emojis sparingly (📅 for calendar, ✅ for success, ❌ for errors)
+
+For read_events: 
+- Summarize events in a clear list format with simple numbering
+- Show dates in a human-friendly format (e.g., "Today", "Tomorrow", "Friday, Nov 23")
+- Include event time in 12-hour format (e.g., "2:00 PM")
+- Format: "1. Event Title\n   Date and time\n   Location (if any)"
+
+For create_event: 
+- Confirm what was created with key details
+- Use relative dates when appropriate (Today, Tomorrow, This Friday)
+- DO NOT mention timezone
+- Format: "✅ I've scheduled [event] for [date] at [time]"
+
+For update_event: 
+- Confirm what was changed
+- Keep it simple: "✅ Updated [event] to [new details]"
+
+For delete_event: 
+- Confirm what was deleted
+- Keep it simple: "✅ Deleted [event]"
+
+For errors: 
+- Explain what went wrong in a helpful way
+- No markdown formatting
+
+Remember: Plain text only, no markdown, no timezone mentions, no links.`;
 
     const userPrompt = `Action: ${action}
 Parameters: ${JSON.stringify(parameters)}
@@ -262,8 +324,11 @@ Generate a user-friendly response.`;
     return content;
   } catch (error) {
     console.error('[AI] Error generating response:', error);
-    // Fallback to simple response
+    // Fallback to simple response (plain text, no markdown)
     if (action === 'read_events' && result.events) {
+      if (result.events.length === 0) {
+        return `No events found.`;
+      }
       return `Found ${result.events.length} event(s).`;
     } else if (action === 'create_event' && result.success) {
       return `✅ Event created successfully!`;
