@@ -3,6 +3,8 @@ const express = require('express');
 const axios = require('axios');
 const { google } = require('googleapis');
 const crypto = require('crypto');
+const https = require('https');
+const { URL } = require('url');
 const { 
   getUserByPhone, 
   saveCalendarTokens, 
@@ -180,18 +182,77 @@ async function getCalendarEvents(phoneNumber) {
         orderBy: 'startTime'
       });
       
-      console.log(`[DEBUG] Request URL: ${calendarUrl}?${params.toString()}`);
-      const response = await axios.get(`${calendarUrl}?${params.toString()}`, {
-        headers: {
-          'Authorization': `Bearer ${credentials.access_token}`,
-          'Content-Type': 'application/json'
-        },
-        timeout: 30000 // 30 second timeout
+      const fullUrl = `${calendarUrl}?${params.toString()}`;
+      console.log(`[DEBUG] Request URL: ${fullUrl}`);
+      console.log(`[DEBUG] Authorization header: Bearer ${credentials.access_token.substring(0, 20)}...`);
+      
+      // Try using Node's built-in https module since axios is hanging
+      console.log(`[DEBUG] Using Node https module for direct HTTP call...`);
+      const urlObj = new URL(fullUrl);
+      
+      const httpsPromise = new Promise((resolve, reject) => {
+        const options = {
+          hostname: urlObj.hostname,
+          path: urlObj.pathname + urlObj.search,
+          method: 'GET',
+          headers: {
+            'Authorization': `Bearer ${credentials.access_token}`,
+            'Content-Type': 'application/json'
+          },
+          timeout: 15000
+        };
+        
+        console.log(`[DEBUG] Making https request to ${options.hostname}${options.path}`);
+        
+        const req = https.request(options, (res) => {
+          console.log(`[DEBUG] HTTPS response received, status: ${res.statusCode}`);
+          
+          let data = '';
+          res.on('data', (chunk) => {
+            data += chunk;
+          });
+          
+          res.on('end', () => {
+            console.log(`[DEBUG] HTTPS response complete, data length: ${data.length}`);
+            try {
+              const jsonData = JSON.parse(data);
+              console.log(`[DEBUG] Parsed JSON, items count: ${jsonData.items ? jsonData.items.length : 0}`);
+              resolve({ status: res.statusCode, data: jsonData });
+            } catch (parseError) {
+              console.error(`[DEBUG] JSON parse error:`, parseError);
+              reject(parseError);
+            }
+          });
+        });
+        
+        req.on('error', (error) => {
+          console.error(`[DEBUG] HTTPS request error:`, error);
+          reject(error);
+        });
+        
+        req.on('timeout', () => {
+          console.error(`[DEBUG] HTTPS request timeout`);
+          req.destroy();
+          reject(new Error('HTTPS request timeout'));
+        });
+        
+        req.setTimeout(15000);
+        req.end();
       });
       
-      console.log(`[DEBUG] Direct HTTP call completed successfully`);
-      const data = response.data;
-      console.log(`[DEBUG] Response status: ${response.status}, items count: ${data.items ? data.items.length : 0}`);
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => {
+          console.error(`[DEBUG] Request timeout after 20 seconds`);
+          reject(new Error('Request timeout after 20s'));
+        }, 20000)
+      );
+      
+      console.log(`[DEBUG] Waiting for HTTPS response...`);
+      const result = await Promise.race([httpsPromise, timeoutPromise]);
+      
+      console.log(`[DEBUG] HTTPS call completed successfully`);
+      const data = result.data;
+      console.log(`[DEBUG] Response status: ${result.status}, items count: ${data.items ? data.items.length : 0}`);
       
       return data.items || [];
     } catch (httpError) {
