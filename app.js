@@ -155,18 +155,74 @@ async function getCalendarEvents(phoneNumber) {
     }
 
     console.log(`[DEBUG] Fetching calendar events from Google API`);
-    const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
-    console.log(`[DEBUG] Created calendar client, calling events.list...`);
     
-    const { data } = await calendar.events.list({
-      calendarId: 'primary',
-      timeMin: new Date().toISOString(),
-      maxResults: 10,
-      singleEvents: true,
-      orderBy: 'startTime'
+    // Check OAuth client credentials
+    const credentials = oauth2Client.credentials;
+    console.log(`[DEBUG] OAuth credentials check:`, {
+      hasAccessToken: !!credentials.access_token,
+      tokenType: credentials.token_type,
+      expiryDate: credentials.expiry_date,
+      hasRefreshToken: !!credentials.refresh_token
     });
-
-    console.log(`[DEBUG] Calendar API call completed`);
+    
+    // Try direct HTTP call first (like curl) as fallback if googleapis hangs
+    const timeMin = new Date().toISOString();
+    console.log(`[DEBUG] timeMin parameter: ${timeMin}`);
+    
+    // Use direct axios call as primary method since curl works
+    console.log(`[DEBUG] Making direct HTTP request to Google Calendar API...`);
+    try {
+      const calendarUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events`;
+      const params = new URLSearchParams({
+        timeMin: timeMin,
+        maxResults: '10',
+        singleEvents: 'true',
+        orderBy: 'startTime'
+      });
+      
+      console.log(`[DEBUG] Request URL: ${calendarUrl}?${params.toString()}`);
+      const response = await axios.get(`${calendarUrl}?${params.toString()}`, {
+        headers: {
+          'Authorization': `Bearer ${credentials.access_token}`,
+          'Content-Type': 'application/json'
+        },
+        timeout: 30000 // 30 second timeout
+      });
+      
+      console.log(`[DEBUG] Direct HTTP call completed successfully`);
+      const data = response.data;
+      console.log(`[DEBUG] Response status: ${response.status}, items count: ${data.items ? data.items.length : 0}`);
+      
+      return data.items || [];
+    } catch (httpError) {
+      console.error(`[DEBUG] Direct HTTP call failed, trying googleapis library:`, {
+        message: httpError.message,
+        code: httpError.code,
+        response: httpError.response?.data,
+        status: httpError.response?.status
+      });
+      
+      // Fallback to googleapis library
+      console.log(`[DEBUG] Falling back to googleapis library...`);
+      const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+      
+      const apiCallPromise = calendar.events.list({
+        calendarId: 'primary',
+        timeMin: timeMin,
+        maxResults: 10,
+        singleEvents: true,
+        orderBy: 'startTime'
+      });
+      
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Calendar API call timeout after 30s')), 30000)
+      );
+      
+      const result = await Promise.race([apiCallPromise, timeoutPromise]);
+      const data = result.data || result;
+      console.log(`[DEBUG] Googleapis library call completed`);
+      return data.items || [];
+    }
     console.log(`[DEBUG] Calendar API response:`, {
       itemsCount: data.items ? data.items.length : 0,
       hasItems: !!data.items,
