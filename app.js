@@ -229,9 +229,19 @@ async function getCalendarEvents(phoneNumber) {
         });
         
         console.log(`[DEBUG] Curl completed, output length: ${output.length} bytes`);
+        console.log(`[DEBUG] Raw curl output (first 500 chars):`, output.substring(0, 500));
+        console.log(`[DEBUG] Raw curl output (last 200 chars):`, output.substring(Math.max(0, output.length - 200)));
         
         const data = JSON.parse(output);
-        console.log(`[DEBUG] JSON parsed, items count: ${data.items ? data.items.length : 0}`);
+        console.log(`[DEBUG] JSON parsed successfully`);
+        console.log(`[DEBUG] JSON keys:`, Object.keys(data));
+        console.log(`[DEBUG] Items exists:`, !!data.items);
+        console.log(`[DEBUG] Items type:`, typeof data.items);
+        console.log(`[DEBUG] Items count:`, data.items ? data.items.length : 0);
+        
+        if (data.items && data.items.length > 0) {
+          console.log(`[DEBUG] First item:`, JSON.stringify(data.items[0]).substring(0, 200));
+        }
         
         return data.items || [];
       } catch (curlError) {
