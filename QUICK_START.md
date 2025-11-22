@@ -154,20 +154,39 @@ npm start
 
 ## 🐛 Troubleshooting
 
+### AI calls are hanging or timing out
+
+**Test your OpenAI API key locally:**
+```bash
+node test-openai.js
+```
+
+This will verify:
+- ✓ API key is set correctly
+- ✓ API key is valid
+- ✓ Network can reach OpenAI API
+- ✓ You have sufficient credits
+
 ### "Calendar not linked" error
 → Send `/link-calendar` and complete authorization
 
 ### AI not responding
 → Check if `OPENAI_API_KEY` is set correctly in environment variables
+→ Run `node test-openai.js` to verify API key
+→ Check Vercel logs for "OPENAI_API_KEY environment variable is not set"
 
 ### "Invalid API key" error
 → Verify your OpenAI API key is correct and active
+→ Make sure it starts with `sk-`
+→ Check you have credits in your OpenAI account
 
 ### Events not showing
 → Make sure you authorized with the new permissions
 
 ### Deployment not working
 → Check Vercel logs for errors
+→ Make sure you added OPENAI_API_KEY to Vercel environment variables
+→ Redeploy after adding environment variables
 
 ---
 

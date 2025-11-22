@@ -1,10 +1,66 @@
 // AI Service for interpreting user requests and managing calendar operations
 const OpenAI = require('openai');
+const { execSync } = require('child_process');
 
 // Initialize OpenAI client
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY
 });
+
+/**
+ * Call OpenAI API using curl (fallback for environments where Node.js HTTP hangs)
+ */
+async function callOpenAIWithCurl(messages, temperature = 0.3, maxTokens = 500) {
+  try {
+    console.log(`[AI] Using curl for OpenAI API call (Node.js HTTP workaround)...`);
+    
+    const apiKey = process.env.OPENAI_API_KEY;
+    const url = 'https://api.openai.com/v1/chat/completions';
+    
+    const payload = JSON.stringify({
+      model: 'gpt-3.5-turbo',
+      messages: messages,
+      temperature: temperature,
+      max_tokens: maxTokens
+    });
+    
+    // Escape single quotes in payload for shell
+    const escapedPayload = payload.replace(/'/g, "'\\''");
+    
+    const curlCommand = [
+      'curl',
+      '-s',
+      '-X', 'POST',
+      '-H', `"Authorization: Bearer ${apiKey}"`,
+      '-H', '"Content-Type: application/json"',
+      '-d', `'${escapedPayload}'`,
+      '--max-time', '15',
+      `"${url}"`
+    ].join(' ');
+    
+    console.log(`[AI] Executing curl for OpenAI API...`);
+    
+    const output = execSync(curlCommand, {
+      encoding: 'utf8',
+      timeout: 20000,
+      maxBuffer: 5 * 1024 * 1024,
+      shell: '/bin/bash'
+    });
+    
+    console.log(`[AI] Curl completed, parsing response...`);
+    const responseData = JSON.parse(output);
+    
+    if (responseData.error) {
+      throw new Error(`OpenAI API error: ${responseData.error.message}`);
+    }
+    
+    console.log(`[AI] OpenAI API call successful via curl`);
+    return responseData;
+  } catch (error) {
+    console.error(`[AI] Curl OpenAI call failed:`, error.message);
+    throw error;
+  }
+}
 
 /**
  * Parse user's natural language request and determine the calendar action
@@ -14,6 +70,14 @@ const openai = new OpenAI({
 async function parseCalendarIntent(userMessage) {
   try {
     console.log(`[AI] Parsing user intent: "${userMessage}"`);
+    
+    // Check if API key is set
+    if (!process.env.OPENAI_API_KEY) {
+      console.error('[AI] OPENAI_API_KEY environment variable is not set!');
+      throw new Error('OpenAI API key not configured');
+    }
+    
+    console.log(`[AI] API key exists: ${process.env.OPENAI_API_KEY.substring(0, 10)}...`);
     
     const systemPrompt = `You are a calendar assistant that interprets user requests and converts them into structured calendar operations.
 
@@ -74,17 +138,44 @@ Response: {"action": "delete_event", "parameters": {"searchQuery": "meeting with
 
 Respond ONLY with valid JSON, no additional text.`;
 
-    const response = await openai.chat.completions.create({
-      model: 'gpt-3.5-turbo',
-      messages: [
+    console.log(`[AI] Making OpenAI API call...`);
+    
+    let responseData;
+    
+    try {
+      // Try using curl directly (since Node.js HTTP often hangs in your environment)
+      console.log(`[AI] Using curl method for reliability...`);
+      responseData = await callOpenAIWithCurl([
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userMessage }
-      ],
-      temperature: 0.3,
-      max_tokens: 500
-    });
+      ], 0.3, 500);
+    } catch (curlError) {
+      console.error(`[AI] Curl method failed, trying OpenAI library:`, curlError.message);
+      
+      // Fallback to OpenAI library with timeout
+      const apiCallPromise = openai.chat.completions.create({
+        model: 'gpt-3.5-turbo',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userMessage }
+        ],
+        temperature: 0.3,
+        max_tokens: 500,
+        timeout: 15000
+      });
+      
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('OpenAI API timeout after 20 seconds')), 20000)
+      );
+      
+      console.log(`[AI] Waiting for OpenAI library response...`);
+      const response = await Promise.race([apiCallPromise, timeoutPromise]);
+      responseData = response;
+    }
+    
+    console.log(`[AI] OpenAI API call completed successfully`);
 
-    const content = response.choices[0].message.content.trim();
+    const content = responseData.choices[0].message.content.trim();
     console.log(`[AI] Raw response: ${content}`);
     
     // Parse JSON response
@@ -129,17 +220,43 @@ Result: ${JSON.stringify(result)}
 
 Generate a user-friendly response.`;
 
-    const response = await openai.chat.completions.create({
-      model: 'gpt-3.5-turbo',
-      messages: [
+    console.log(`[AI] Generating response with OpenAI...`);
+    
+    let responseData;
+    
+    try {
+      // Try using curl directly
+      console.log(`[AI] Using curl method for response generation...`);
+      responseData = await callOpenAIWithCurl([
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt }
-      ],
-      temperature: 0.7,
-      max_tokens: 300
-    });
+      ], 0.7, 300);
+    } catch (curlError) {
+      console.error(`[AI] Curl method failed, trying OpenAI library:`, curlError.message);
+      
+      // Fallback to OpenAI library
+      const apiCallPromise = openai.chat.completions.create({
+        model: 'gpt-3.5-turbo',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        temperature: 0.7,
+        max_tokens: 300,
+        timeout: 15000
+      });
+      
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('OpenAI API timeout after 20 seconds')), 20000)
+      );
+      
+      const response = await Promise.race([apiCallPromise, timeoutPromise]);
+      responseData = response;
+    }
+    
+    console.log(`[AI] Response generation completed`);
 
-    const content = response.choices[0].message.content.trim();
+    const content = responseData.choices[0].message.content.trim();
     console.log(`[AI] Generated response: ${content}`);
     
     return content;
