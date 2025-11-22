@@ -210,22 +210,17 @@ async function getCalendarEvents(phoneNumber) {
       
       try {
         // Use curl since it's the only thing that works
-        const curlCommand = [
-          'curl',
-          '-s',
-          '-H', `Authorization: Bearer ${credentials.access_token}`,
-          '-H', 'Content-Type: application/json',
-          '--max-time', '10',
-          `"${fullUrl}"`
-        ].join(' ');
+        // Need to properly escape the command for shell execution
+        const curlCommand = `curl -s -H "Authorization: Bearer ${credentials.access_token}" -H "Content-Type: application/json" --max-time 10 "${fullUrl}"`;
         
         console.log(`[DEBUG] Executing curl command...`);
-        console.log(`[DEBUG] Command: curl -s -H "Authorization: Bearer ***" "${fullUrl.substring(0, 80)}..."`);
+        console.log(`[DEBUG] Command: curl -s -H "Authorization: Bearer ${credentials.access_token.substring(0, 20)}..." "${fullUrl.substring(0, 80)}..."`);
         
         const output = execSync(curlCommand, {
           encoding: 'utf8',
           timeout: 12000, // 12 second timeout
-          maxBuffer: 10 * 1024 * 1024 // 10MB buffer
+          maxBuffer: 10 * 1024 * 1024, // 10MB buffer
+          shell: '/bin/bash'
         });
         
         console.log(`[DEBUG] Curl completed, output length: ${output.length} bytes`);
