@@ -186,73 +186,47 @@ async function getCalendarEvents(phoneNumber) {
       console.log(`[DEBUG] Request URL: ${fullUrl}`);
       console.log(`[DEBUG] Authorization header: Bearer ${credentials.access_token.substring(0, 20)}...`);
       
-      // Try using Node's built-in https module since axios is hanging
-      console.log(`[DEBUG] Using Node https module for direct HTTP call...`);
-      const urlObj = new URL(fullUrl);
+      // Try using Node's built-in fetch (available in Node 18+)
+      console.log(`[DEBUG] Using Node fetch API (built-in)...`);
       
-      const httpsPromise = new Promise((resolve, reject) => {
-        const options = {
-          hostname: urlObj.hostname,
-          path: urlObj.pathname + urlObj.search,
+      const fetchPromise = (async () => {
+        console.log(`[DEBUG] Starting fetch call...`);
+        const response = await fetch(fullUrl, {
           method: 'GET',
           headers: {
             'Authorization': `Bearer ${credentials.access_token}`,
             'Content-Type': 'application/json'
           },
-          timeout: 15000
-        };
-        
-        console.log(`[DEBUG] Making https request to ${options.hostname}${options.path}`);
-        
-        const req = https.request(options, (res) => {
-          console.log(`[DEBUG] HTTPS response received, status: ${res.statusCode}`);
-          
-          let data = '';
-          res.on('data', (chunk) => {
-            data += chunk;
-          });
-          
-          res.on('end', () => {
-            console.log(`[DEBUG] HTTPS response complete, data length: ${data.length}`);
-            try {
-              const jsonData = JSON.parse(data);
-              console.log(`[DEBUG] Parsed JSON, items count: ${jsonData.items ? jsonData.items.length : 0}`);
-              resolve({ status: res.statusCode, data: jsonData });
-            } catch (parseError) {
-              console.error(`[DEBUG] JSON parse error:`, parseError);
-              reject(parseError);
-            }
-          });
+          signal: AbortSignal.timeout(10000) // 10 second timeout
         });
         
-        req.on('error', (error) => {
-          console.error(`[DEBUG] HTTPS request error:`, error);
-          reject(error);
-        });
+        console.log(`[DEBUG] Fetch response received, status: ${response.status}`);
         
-        req.on('timeout', () => {
-          console.error(`[DEBUG] HTTPS request timeout`);
-          req.destroy();
-          reject(new Error('HTTPS request timeout'));
-        });
+        if (!response.ok) {
+          const errorText = await response.text();
+          console.error(`[DEBUG] Fetch error response:`, errorText.substring(0, 200));
+          throw new Error(`HTTP ${response.status}: ${errorText.substring(0, 100)}`);
+        }
         
-        req.setTimeout(15000);
-        req.end();
-      });
+        console.log(`[DEBUG] Parsing JSON response...`);
+        const data = await response.json();
+        console.log(`[DEBUG] JSON parsed, items count: ${data.items ? data.items.length : 0}`);
+        
+        return data;
+      })();
       
       const timeoutPromise = new Promise((_, reject) => 
         setTimeout(() => {
-          console.error(`[DEBUG] Request timeout after 20 seconds`);
-          reject(new Error('Request timeout after 20s'));
-        }, 20000)
+          console.error(`[DEBUG] Overall timeout after 15 seconds`);
+          reject(new Error('Overall timeout after 15s'));
+        }, 15000)
       );
       
-      console.log(`[DEBUG] Waiting for HTTPS response...`);
-      const result = await Promise.race([httpsPromise, timeoutPromise]);
+      console.log(`[DEBUG] Waiting for fetch response...`);
+      const data = await Promise.race([fetchPromise, timeoutPromise]);
       
-      console.log(`[DEBUG] HTTPS call completed successfully`);
-      const data = result.data;
-      console.log(`[DEBUG] Response status: ${result.status}, items count: ${data.items ? data.items.length : 0}`);
+      console.log(`[DEBUG] Fetch completed successfully`);
+      console.log(`[DEBUG] Items count: ${data.items ? data.items.length : 0}`);
       
       return data.items || [];
     } catch (httpError) {
