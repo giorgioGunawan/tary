@@ -51,20 +51,39 @@ async function getUserByPhone(phoneNumber) {
     }
     
     const user = result.rows[0];
+    
+    // Safely log user data (avoid logging JSONB directly as it can cause issues)
+    console.log(`[DEBUG] User found for ${phoneNumber}:`, {
+      phoneNumber: user.phone_number,
+      hasTokens: !!user.google_calendar_tokens,
+      hasPendingOAuth: !!user.pending_oauth,
+      calendarLinked: user.calendar_linked,
+      tokenType: user.google_calendar_tokens ? typeof user.google_calendar_tokens : null
+    });
+    
     // Parse JSONB tokens if they exist
+    // JSONB fields come as objects from PostgreSQL, but we need to ensure they're properly handled
     if (user.google_calendar_tokens) {
-      user.googleCalendarTokens = user.google_calendar_tokens;
+      // If it's already an object, use it directly
+      // If it's a string, parse it
+      if (typeof user.google_calendar_tokens === 'string') {
+        try {
+          user.googleCalendarTokens = JSON.parse(user.google_calendar_tokens);
+        } catch (e) {
+          console.error(`[DEBUG] Error parsing tokens JSON:`, e);
+          user.googleCalendarTokens = user.google_calendar_tokens;
+        }
+      } else {
+        user.googleCalendarTokens = user.google_calendar_tokens;
+      }
     }
+    
     // Map snake_case to camelCase for compatibility
     if (user.pending_oauth) {
       user.pendingOAuth = user.pending_oauth;
     }
     
-    console.log(`[DEBUG] User found for ${phoneNumber}:`, {
-      found: true,
-      hasTokens: !!user.google_calendar_tokens,
-      hasPendingOAuth: !!user.pending_oauth
-    });
+    console.log(`[DEBUG] User data processed successfully for ${phoneNumber}`);
     
     return user;
   } catch (error) {
