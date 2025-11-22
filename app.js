@@ -89,6 +89,10 @@ app.get('/', (req, res) => {
 // Function to send WhatsApp message
 async function sendWhatsAppMessage(phoneNumberId, to, messageText) {
   try {
+    console.log(`[DEBUG] sendWhatsAppMessage called: to=${to}, messageLength=${messageText.length}`);
+    console.log(`[DEBUG] Phone number ID: ${phoneNumberId}`);
+    console.log(`[DEBUG] Making WhatsApp API request...`);
+    
     const response = await axios.post(
       `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
       {
@@ -103,13 +107,21 @@ async function sendWhatsAppMessage(phoneNumberId, to, messageText) {
         headers: {
           'Authorization': `Bearer ${whatsappAccessToken}`,
           'Content-Type': 'application/json'
-        }
+        },
+        timeout: 30000 // 30 second timeout
       }
     );
+    
+    console.log(`[DEBUG] WhatsApp API response received`);
     console.log('Message sent successfully:', response.data);
     return response.data;
   } catch (error) {
-    console.error('Error sending message:', error.response?.data || error.message);
+    console.error(`[DEBUG] Error in sendWhatsAppMessage:`, {
+      message: error.message,
+      code: error.code,
+      response: error.response?.data,
+      status: error.response?.status
+    });
     throw error;
   }
 }
@@ -144,6 +156,8 @@ async function getCalendarEvents(phoneNumber) {
 
     console.log(`[DEBUG] Fetching calendar events from Google API`);
     const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
+    console.log(`[DEBUG] Created calendar client, calling events.list...`);
+    
     const { data } = await calendar.events.list({
       calendarId: 'primary',
       timeMin: new Date().toISOString(),
@@ -152,12 +166,17 @@ async function getCalendarEvents(phoneNumber) {
       orderBy: 'startTime'
     });
 
+    console.log(`[DEBUG] Calendar API call completed`);
     console.log(`[DEBUG] Calendar API response:`, {
       itemsCount: data.items ? data.items.length : 0,
-      hasItems: !!data.items
+      hasItems: !!data.items,
+      dataKeys: Object.keys(data || {})
     });
 
-    return data.items || [];
+    console.log(`[DEBUG] Processing events array...`);
+    const events = data.items || [];
+    console.log(`[DEBUG] Returning ${events.length} events`);
+    return events;
   } catch (error) {
     console.error(`[DEBUG] Error fetching calendar events for ${phoneNumber}:`, {
       message: error.message,
@@ -263,30 +282,50 @@ app.post('/', async (req, res) => {
                         console.log(`[DEBUG] Fetching calendar events for ${senderPhone}`);
                         const events = await getCalendarEvents(senderPhone);
                         console.log(`[DEBUG] Retrieved ${events ? events.length : 0} events`);
+                        console.log(`[DEBUG] Events type: ${typeof events}, isArray: ${Array.isArray(events)}`);
                         
                         if (!events || events.length === 0) {
+                          console.log(`[DEBUG] No events found, sending 'no events' message`);
                           await sendWhatsAppMessage(
                             phoneNumberId,
                             senderPhone,
                             'You have no upcoming events in your calendar.'
                           );
+                          console.log(`[DEBUG] 'No events' message sent successfully`);
                         } else {
+                          console.log(`[DEBUG] Processing ${events.length} events for formatting...`);
                           let eventsText = '📅 Your upcoming events:\n\n';
+                          
                           events.forEach((event, index) => {
-                            const start = event.start.dateTime || event.start.date;
-                            const date = new Date(start).toLocaleString();
-                            eventsText += `${index + 1}. ${event.summary || '(No title)'}\n   ${date}\n\n`;
+                            console.log(`[DEBUG] Processing event ${index + 1}/${events.length}: ${event.summary || '(No title)'}`);
+                            try {
+                              const start = event.start.dateTime || event.start.date;
+                              const date = new Date(start).toLocaleString();
+                              eventsText += `${index + 1}. ${event.summary || '(No title)'}\n   ${date}\n\n`;
+                            } catch (eventError) {
+                              console.error(`[DEBUG] Error processing event ${index}:`, eventError);
+                              eventsText += `${index + 1}. ${event.summary || '(No title)'}\n   (Date parsing error)\n\n`;
+                            }
                           });
-                          console.log(`[DEBUG] Sending events response to ${senderPhone}`);
+                          
+                          console.log(`[DEBUG] Finished formatting events, message length: ${eventsText.length} chars`);
+                          console.log(`[DEBUG] About to send WhatsApp message to ${senderPhone}`);
                           await sendWhatsAppMessage(phoneNumberId, senderPhone, eventsText);
+                          console.log(`[DEBUG] WhatsApp message sent successfully to ${senderPhone}`);
                         }
                       } catch (error) {
-                        console.error(`[DEBUG] Error fetching calendar events for ${senderPhone}:`, error);
+                        console.error(`[DEBUG] Error fetching calendar events for ${senderPhone}:`, {
+                          message: error.message,
+                          stack: error.stack,
+                          name: error.name
+                        });
+                        console.log(`[DEBUG] Sending error message to user`);
                         await sendWhatsAppMessage(
                           phoneNumberId,
                           senderPhone,
                           `Sorry, I couldn't fetch your calendar events. Error: ${error.message}`
                         );
+                        console.log(`[DEBUG] Error message sent`);
                       }
                     }
                   } else {
@@ -475,6 +514,30 @@ app.get('/api/debug/storage', async (req, res) => {
   } catch (error) {
     console.error('Debug storage endpoint failed:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Test endpoint: Test Google Calendar API directly
+app.get('/api/test/calendar', async (req, res) => {
+  try {
+    const { phone } = req.query;
+    if (!phone) {
+      return res.status(400).json({ error: 'Phone parameter required' });
+    }
+    
+    const events = await getCalendarEvents(phone);
+    res.json({
+      success: true,
+      eventCount: events ? events.length : 0,
+      events: events || []
+    });
+  } catch (error) {
+    console.error('Test calendar endpoint error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+      details: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
   }
 });
 
