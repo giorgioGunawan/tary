@@ -49,6 +49,7 @@ async function getUserByPhone(phoneNumber) {
       console.log(`[DEBUG] No user found for ${phoneNumber}`);
       return null;
     }
+    console.log(`[DEBUG] Result:`, result);
     
     const user = result.rows[0];
     
