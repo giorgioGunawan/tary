@@ -22,17 +22,29 @@ async function initStorage() {
 
 // Get all users
 async function getUsers() {
-  await initStorage();
   try {
+    console.log(`[DEBUG] getUsers called, initializing storage...`);
+    await initStorage();
+    console.log(`[DEBUG] Storage initialized, reading file: ${STORAGE_FILE}`);
     const data = await fs.readFile(STORAGE_FILE, 'utf8');
+    console.log(`[DEBUG] File read successful, length: ${data ? data.length : 0}`);
     // Handle empty file
     if (!data || data.trim() === '') {
+      console.log(`[DEBUG] File is empty, returning empty object`);
       return {};
     }
-    return JSON.parse(data);
+    const parsed = JSON.parse(data);
+    console.log(`[DEBUG] JSON parsed successfully, keys: ${Object.keys(parsed).length}`);
+    return parsed;
   } catch (error) {
+    console.error(`[DEBUG] Error in getUsers:`, {
+      code: error.code,
+      message: error.message,
+      name: error.name
+    });
     // If file doesn't exist, return empty object
     if (error.code === 'ENOENT') {
+      console.log(`[DEBUG] File doesn't exist, returning empty object`);
       return {};
     }
     // If JSON parse error, return empty object
@@ -46,8 +58,20 @@ async function getUsers() {
 
 // Get user by WhatsApp phone number
 async function getUserByPhone(phoneNumber) {
-  const users = await getUsers();
-  return users[phoneNumber] || null;
+  try {
+    console.log(`[DEBUG] getUserByPhone called for ${phoneNumber}`);
+    const users = await getUsers();
+    console.log(`[DEBUG] getUsers returned, checking for phone ${phoneNumber}`);
+    const user = users[phoneNumber] || null;
+    console.log(`[DEBUG] getUserByPhone result:`, {
+      found: !!user,
+      phoneNumber
+    });
+    return user;
+  } catch (error) {
+    console.error(`[DEBUG] Error in getUserByPhone for ${phoneNumber}:`, error);
+    throw error;
+  }
 }
 
 // Save or update user

@@ -222,12 +222,34 @@ app.post('/', async (req, res) => {
                   } else if (messageText === '/calendar' || messageText === 'calendar' || messageText.startsWith('show calendar')) {
                     console.log(`[DEBUG] Calendar command detected for ${senderPhone}`);
                     // Show upcoming calendar events
-                    const user = await getUserByPhone(senderPhone);
-                    console.log(`[DEBUG] User lookup result:`, {
-                      userExists: !!user,
-                      hasTokens: !!(user && user.googleCalendarTokens),
-                      phoneNumber: senderPhone
-                    });
+                    console.log(`[DEBUG] About to lookup user for ${senderPhone}`);
+                    let user;
+                    try {
+                      // Add timeout wrapper
+                      const userLookupPromise = getUserByPhone(senderPhone);
+                      const timeoutPromise = new Promise((_, reject) => 
+                        setTimeout(() => reject(new Error('User lookup timeout after 5s')), 5000)
+                      );
+                      user = await Promise.race([userLookupPromise, timeoutPromise]);
+                      console.log(`[DEBUG] User lookup completed for ${senderPhone}:`, {
+                        userExists: !!user,
+                        hasTokens: !!(user && user.googleCalendarTokens),
+                        phoneNumber: senderPhone,
+                        userKeys: user ? Object.keys(user) : null
+                      });
+                    } catch (userError) {
+                      console.error(`[DEBUG] Error looking up user ${senderPhone}:`, {
+                        message: userError.message,
+                        stack: userError.stack,
+                        name: userError.name
+                      });
+                      await sendWhatsAppMessage(
+                        phoneNumberId,
+                        senderPhone,
+                        `Error looking up your account: ${userError.message}. Please try again.`
+                      );
+                      continue; // Skip to next message
+                    }
                     
                     if (!user || !user.googleCalendarTokens) {
                       console.log(`[DEBUG] No calendar linked for ${senderPhone}`);
