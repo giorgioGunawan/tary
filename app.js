@@ -13,6 +13,7 @@ const {
   clearPendingOAuth,
   getAllUsers
 } = require('./userStorage');
+const { processCalendarMessage } = require('./calendarHandler');
 
 // Create an Express app
 const app = express();
@@ -74,8 +75,11 @@ app.get('/debug/callback-url', (req, res) => {
   });
 });
 
-// Google Calendar scopes
-const SCOPES = ['https://www.googleapis.com/auth/calendar.readonly'];
+// Google Calendar scopes - full read/write access
+const SCOPES = [
+  'https://www.googleapis.com/auth/calendar.events',
+  'https://www.googleapis.com/auth/calendar.readonly'
+];
 
 // Route for GET requests
 app.get('/', (req, res) => {
@@ -147,8 +151,213 @@ async function sendWhatsAppMessage(phoneNumberId, to, messageText) {
   }
 }
 
+// Function to create a calendar event
+async function createCalendarEvent(phoneNumber, eventDetails) {
+  console.log(`[DEBUG] createCalendarEvent called for ${phoneNumber}`);
+  const user = await getUserByPhone(phoneNumber);
+  
+  if (!user || !user.googleCalendarTokens) {
+    console.log(`[DEBUG] No user or tokens found for ${phoneNumber}`);
+    return { success: false, error: 'Calendar not linked' };
+  }
+
+  try {
+    console.log(`[DEBUG] Setting OAuth credentials for ${phoneNumber}`);
+    oauth2Client.setCredentials(user.googleCalendarTokens);
+    
+    // Refresh token if needed
+    if (user.googleCalendarTokens.expiry_date && user.googleCalendarTokens.expiry_date <= Date.now()) {
+      console.log(`[DEBUG] Token expired, refreshing for ${phoneNumber}`);
+      const { credentials } = await oauth2Client.refreshAccessToken();
+      await saveCalendarTokens(phoneNumber, credentials);
+      oauth2Client.setCredentials(credentials);
+    }
+
+    // Build event object
+    const event = {
+      summary: eventDetails.summary,
+      location: eventDetails.location || undefined,
+      description: eventDetails.description || undefined,
+      start: {
+        dateTime: eventDetails.startDateTime,
+        timeZone: 'Australia/Sydney', // Default timezone
+      },
+      end: {
+        dateTime: eventDetails.endDateTime,
+        timeZone: 'Australia/Sydney',
+      },
+    };
+
+    console.log(`[DEBUG] Creating event:`, JSON.stringify(event, null, 2));
+    
+    // Use curl for API call
+    const credentials = oauth2Client.credentials;
+    const url = 'https://www.googleapis.com/calendar/v3/calendars/primary/events';
+    const payload = JSON.stringify(event);
+    const escapedPayload = payload.replace(/'/g, "'\\''");
+    
+    const curlCommand = `curl -s -X POST -H "Authorization: Bearer ${credentials.access_token}" -H "Content-Type: application/json" -d '${escapedPayload}' --max-time 10 "${url}"`;
+    
+    const output = execSync(curlCommand, {
+      encoding: 'utf8',
+      timeout: 12000,
+      maxBuffer: 10 * 1024 * 1024,
+      shell: '/bin/bash'
+    });
+    
+    const data = JSON.parse(output);
+    console.log(`[DEBUG] Event created:`, data.id);
+    
+    return { success: true, event: data };
+  } catch (error) {
+    console.error(`[DEBUG] Error creating calendar event for ${phoneNumber}:`, error);
+    return { success: false, error: error.message };
+  }
+}
+
+// Function to update a calendar event
+async function updateCalendarEvent(phoneNumber, eventId, updates) {
+  console.log(`[DEBUG] updateCalendarEvent called for ${phoneNumber}, event: ${eventId}`);
+  const user = await getUserByPhone(phoneNumber);
+  
+  if (!user || !user.googleCalendarTokens) {
+    return { success: false, error: 'Calendar not linked' };
+  }
+
+  try {
+    oauth2Client.setCredentials(user.googleCalendarTokens);
+    
+    // Refresh token if needed
+    if (user.googleCalendarTokens.expiry_date && user.googleCalendarTokens.expiry_date <= Date.now()) {
+      const { credentials } = await oauth2Client.refreshAccessToken();
+      await saveCalendarTokens(phoneNumber, credentials);
+      oauth2Client.setCredentials(credentials);
+    }
+
+    // First, get the existing event
+    const credentials = oauth2Client.credentials;
+    const getUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events/${eventId}`;
+    
+    const getCommand = `curl -s -H "Authorization: Bearer ${credentials.access_token}" --max-time 10 "${getUrl}"`;
+    const getOutput = execSync(getCommand, {
+      encoding: 'utf8',
+      timeout: 12000,
+      maxBuffer: 10 * 1024 * 1024,
+      shell: '/bin/bash'
+    });
+    
+    const existingEvent = JSON.parse(getOutput);
+    
+    // Merge updates
+    if (updates.summary) existingEvent.summary = updates.summary;
+    if (updates.location) existingEvent.location = updates.location;
+    if (updates.description) existingEvent.description = updates.description;
+    if (updates.startDateTime) {
+      existingEvent.start = {
+        dateTime: updates.startDateTime,
+        timeZone: existingEvent.start.timeZone || 'Australia/Sydney'
+      };
+    }
+    if (updates.endDateTime) {
+      existingEvent.end = {
+        dateTime: updates.endDateTime,
+        timeZone: existingEvent.end.timeZone || 'Australia/Sydney'
+      };
+    }
+
+    // Update the event
+    const payload = JSON.stringify(existingEvent);
+    const escapedPayload = payload.replace(/'/g, "'\\''");
+    
+    const updateCommand = `curl -s -X PUT -H "Authorization: Bearer ${credentials.access_token}" -H "Content-Type: application/json" -d '${escapedPayload}' --max-time 10 "${getUrl}"`;
+    
+    const output = execSync(updateCommand, {
+      encoding: 'utf8',
+      timeout: 12000,
+      maxBuffer: 10 * 1024 * 1024,
+      shell: '/bin/bash'
+    });
+    
+    const data = JSON.parse(output);
+    console.log(`[DEBUG] Event updated:`, data.id);
+    
+    return { success: true, event: data };
+  } catch (error) {
+    console.error(`[DEBUG] Error updating calendar event:`, error);
+    return { success: false, error: error.message };
+  }
+}
+
+// Function to delete a calendar event
+async function deleteCalendarEvent(phoneNumber, eventId) {
+  console.log(`[DEBUG] deleteCalendarEvent called for ${phoneNumber}, event: ${eventId}`);
+  const user = await getUserByPhone(phoneNumber);
+  
+  if (!user || !user.googleCalendarTokens) {
+    return { success: false, error: 'Calendar not linked' };
+  }
+
+  try {
+    oauth2Client.setCredentials(user.googleCalendarTokens);
+    
+    // Refresh token if needed
+    if (user.googleCalendarTokens.expiry_date && user.googleCalendarTokens.expiry_date <= Date.now()) {
+      const { credentials } = await oauth2Client.refreshAccessToken();
+      await saveCalendarTokens(phoneNumber, credentials);
+      oauth2Client.setCredentials(credentials);
+    }
+
+    const credentials = oauth2Client.credentials;
+    const url = `https://www.googleapis.com/calendar/v3/calendars/primary/events/${eventId}`;
+    
+    const deleteCommand = `curl -s -X DELETE -H "Authorization: Bearer ${credentials.access_token}" --max-time 10 "${url}"`;
+    
+    execSync(deleteCommand, {
+      encoding: 'utf8',
+      timeout: 12000,
+      maxBuffer: 10 * 1024 * 1024,
+      shell: '/bin/bash'
+    });
+    
+    console.log(`[DEBUG] Event deleted: ${eventId}`);
+    
+    return { success: true };
+  } catch (error) {
+    console.error(`[DEBUG] Error deleting calendar event:`, error);
+    return { success: false, error: error.message };
+  }
+}
+
+// Function to search for events by query
+async function searchCalendarEvents(phoneNumber, searchQuery) {
+  console.log(`[DEBUG] searchCalendarEvents called for ${phoneNumber}, query: ${searchQuery}`);
+  
+  try {
+    // Get all upcoming events
+    const events = await getCalendarEvents(phoneNumber);
+    
+    if (!events || events.length === 0) {
+      return [];
+    }
+    
+    // Simple text search in event summary
+    const query = searchQuery.toLowerCase();
+    const matches = events.filter(event => 
+      (event.summary && event.summary.toLowerCase().includes(query)) ||
+      (event.location && event.location.toLowerCase().includes(query)) ||
+      (event.description && event.description.toLowerCase().includes(query))
+    );
+    
+    console.log(`[DEBUG] Found ${matches.length} matching events for query: ${searchQuery}`);
+    return matches;
+  } catch (error) {
+    console.error(`[DEBUG] Error searching calendar events:`, error);
+    return [];
+  }
+}
+
 // Function to get calendar events for a user
-async function getCalendarEvents(phoneNumber) {
+async function getCalendarEvents(phoneNumber, timeMin = null, timeMax = null) {
   console.log(`[DEBUG] getCalendarEvents called for ${phoneNumber}`);
   const user = await getUserByPhone(phoneNumber);
   console.log(`[DEBUG] User data:`, {
@@ -187,19 +396,23 @@ async function getCalendarEvents(phoneNumber) {
     });
     
     // Try direct HTTP call first (like curl) as fallback if googleapis hangs
-    const timeMin = new Date().toISOString();
-    console.log(`[DEBUG] timeMin parameter: ${timeMin}`);
+    const finalTimeMin = timeMin || new Date().toISOString();
+    console.log(`[DEBUG] timeMin parameter: ${finalTimeMin}`);
     
     // Use direct axios call as primary method since curl works
     console.log(`[DEBUG] Making direct HTTP request to Google Calendar API...`);
     try {
       const calendarUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events`;
       const params = new URLSearchParams({
-        timeMin: timeMin,
-        maxResults: '10',
+        timeMin: finalTimeMin,
+        maxResults: timeMax ? '100' : '10',
         singleEvents: 'true',
         orderBy: 'startTime'
       });
+      
+      if (timeMax) {
+        params.append('timeMax', timeMax);
+      }
       
       const fullUrl = `${calendarUrl}?${params.toString()}`;
       console.log(`[DEBUG] Request URL: ${fullUrl}`);
@@ -259,13 +472,19 @@ async function getCalendarEvents(phoneNumber) {
       console.log(`[DEBUG] Falling back to googleapis library...`);
       const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
       
-      const apiCallPromise = calendar.events.list({
+      const listParams = {
         calendarId: 'primary',
-        timeMin: timeMin,
-        maxResults: 10,
+        timeMin: finalTimeMin,
+        maxResults: timeMax ? 100 : 10,
         singleEvents: true,
         orderBy: 'startTime'
-      });
+      };
+      
+      if (timeMax) {
+        listParams.timeMax = timeMax;
+      }
+      
+      const apiCallPromise = calendar.events.list(listParams);
       
       const timeoutPromise = new Promise((_, reject) => 
         setTimeout(() => reject(new Error('Calendar API call timeout after 30s')), 30000)
@@ -330,15 +549,8 @@ app.post('/', async (req, res) => {
                     length: messageText.length
                   });
                   
-                  // Handle commands
-                  if (messageText === '/hello' || messageText === 'hello') {
-                    console.log(`[DEBUG] Hello command detected for ${senderPhone}`);
-                    await sendWhatsAppMessage(
-                      phoneNumberId,
-                      senderPhone,
-                      'Hello! I received your message.'
-                    );
-                  } else if (messageText === '/link-calendar' || messageText === 'link calendar') {
+                  // Handle special commands first
+                  if (messageText === '/link-calendar' || messageText === 'link calendar') {
                     // Generate OAuth URL
                     const state = crypto.randomBytes(32).toString('hex');
                     await setPendingOAuth(senderPhone, state);
@@ -354,7 +566,85 @@ app.post('/', async (req, res) => {
                       senderPhone, 
                       `Click this link to connect your Google Calendar:\n\n${authUrl}\n\nAfter connecting, I'll send you a confirmation message.`
                     );
-                  } else if (messageText === '/calendar' || messageText === 'calendar' || messageText.startsWith('show calendar')) {
+                  } else {
+                    // All other messages go through AI processing
+                    console.log(`[DEBUG] Processing message with AI for ${senderPhone}`);
+                    
+                    // Check if user has calendar linked
+                    let user;
+                    try {
+                      const userLookupPromise = getUserByPhone(senderPhone);
+                      const timeoutPromise = new Promise((_, reject) => 
+                        setTimeout(() => reject(new Error('User lookup timeout after 5s')), 5000)
+                      );
+                      user = await Promise.race([userLookupPromise, timeoutPromise]);
+                    } catch (userError) {
+                      console.error(`[DEBUG] Error looking up user ${senderPhone}:`, userError);
+                      await sendWhatsAppMessage(
+                        phoneNumberId,
+                        senderPhone,
+                        `Error looking up your account: ${userError.message}. Please try again.`
+                      );
+                      continue;
+                    }
+                    
+                    if (!user || !user.googleCalendarTokens) {
+                      console.log(`[DEBUG] No calendar linked for ${senderPhone}`);
+                      await sendWhatsAppMessage(
+                        phoneNumberId,
+                        senderPhone,
+                        'Your calendar is not linked yet. Send "/link-calendar" to connect your Google Calendar first.'
+                      );
+                    } else {
+                      // Process message with AI
+                      try {
+                        const calendarFunctions = {
+                          getCalendarEvents: (phone, timeMin, timeMax) => 
+                            getCalendarEvents(phone, timeMin, timeMax),
+                          createCalendarEvent: (phone, eventDetails) => 
+                            createCalendarEvent(phone, eventDetails),
+                          updateCalendarEvent: (phone, eventId, updates) => 
+                            updateCalendarEvent(phone, eventId, updates),
+                          deleteCalendarEvent: (phone, eventId) => 
+                            deleteCalendarEvent(phone, eventId),
+                          searchCalendarEvents: (phone, query) => 
+                            searchCalendarEvents(phone, query)
+                        };
+                        
+                        const result = await processCalendarMessage(
+                          originalMessage,
+                          senderPhone,
+                          calendarFunctions
+                        );
+                        
+                        console.log(`[DEBUG] AI processing result:`, result);
+                        
+                        await sendWhatsAppMessage(
+                          phoneNumberId,
+                          senderPhone,
+                          result.response
+                        );
+                      } catch (aiError) {
+                        console.error(`[DEBUG] Error processing AI request:`, aiError);
+                        await sendWhatsAppMessage(
+                          phoneNumberId,
+                          senderPhone,
+                          `Sorry, I couldn't process your request: ${aiError.message}`
+                        );
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error processing webhook:', error);
+  }
+});
                     console.log(`[DEBUG] Calendar command detected for ${senderPhone}`);
                     // Show upcoming calendar events
                     console.log(`[DEBUG] About to lookup user for ${senderPhone}`);
