@@ -96,34 +96,52 @@ async function sendWhatsAppMessage(phoneNumberId, to, messageText) {
     console.log(`[DEBUG] Phone number ID: ${phoneNumberId}`);
     console.log(`[DEBUG] Making WhatsApp API request...`);
     
-    const response = await axios.post(
-      `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`,
-      {
-        messaging_product: 'whatsapp',
-        to: to,
-        type: 'text',
-        text: {
-          body: messageText
-        }
-      },
-      {
-        headers: {
-          'Authorization': `Bearer ${whatsappAccessToken}`,
-          'Content-Type': 'application/json'
-        },
-        timeout: 30000 // 30 second timeout
-      }
-    );
+    // Use curl since all Node.js HTTP methods hang in this environment
+    console.log(`[DEBUG] Using curl for WhatsApp API call...`);
     
-    console.log(`[DEBUG] WhatsApp API response received`);
-    console.log('Message sent successfully:', response.data);
-    return response.data;
+    const url = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
+    const payload = JSON.stringify({
+      messaging_product: 'whatsapp',
+      to: to,
+      type: 'text',
+      text: {
+        body: messageText
+      }
+    });
+    
+    // Escape single quotes in payload for shell
+    const escapedPayload = payload.replace(/'/g, "'\\''");
+    
+    const curlCommand = [
+      'curl',
+      '-s',
+      '-X', 'POST',
+      '-H', `"Authorization: Bearer ${whatsappAccessToken}"`,
+      '-H', '"Content-Type: application/json"',
+      '-d', `'${escapedPayload}'`,
+      '--max-time', '10',
+      `"${url}"`
+    ].join(' ');
+    
+    console.log(`[DEBUG] Executing curl for WhatsApp...`);
+    
+    const output = execSync(curlCommand, {
+      encoding: 'utf8',
+      timeout: 12000,
+      maxBuffer: 1024 * 1024,
+      shell: '/bin/bash'
+    });
+    
+    console.log(`[DEBUG] Curl completed, output: ${output.substring(0, 200)}`);
+    
+    const responseData = JSON.parse(output);
+    console.log('Message sent successfully:', responseData);
+    return responseData;
   } catch (error) {
     console.error(`[DEBUG] Error in sendWhatsAppMessage:`, {
       message: error.message,
-      code: error.code,
-      response: error.response?.data,
-      status: error.response?.status
+      stderr: error.stderr ? error.stderr.toString() : null,
+      stdout: error.stdout ? error.stdout.toString() : null
     });
     throw error;
   }
@@ -308,7 +326,14 @@ app.post('/', async (req, res) => {
                   });
                   
                   // Handle commands
-                  if (messageText === '/link-calendar' || messageText === 'link calendar') {
+                  if (messageText === '/hello' || messageText === 'hello') {
+                    console.log(`[DEBUG] Hello command detected for ${senderPhone}`);
+                    await sendWhatsAppMessage(
+                      phoneNumberId,
+                      senderPhone,
+                      'Hello! I received your message.'
+                    );
+                  } else if (messageText === '/link-calendar' || messageText === 'link calendar') {
                     // Generate OAuth URL
                     const state = crypto.randomBytes(32).toString('hex');
                     await setPendingOAuth(senderPhone, state);
