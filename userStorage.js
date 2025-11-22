@@ -16,7 +16,9 @@ if (!process.env.POSTGRES_URL && !process.env.DATABASE_URL) {
 // Initialize database table (idempotent - safe to call multiple times)
 async function initDatabase() {
   try {
-    await sql`
+    console.log('[DEBUG] Initializing database table...');
+    // Add timeout for table creation
+    const createTablePromise = sql`
       CREATE TABLE IF NOT EXISTS users (
         phone_number VARCHAR(20) PRIMARY KEY,
         google_calendar_tokens JSONB,
@@ -27,30 +29,78 @@ async function initDatabase() {
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
       )
     `;
-    console.log('[DEBUG] Database table initialized');
+    
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Database initialization timeout')), 10000)
+    );
+    
+    await Promise.race([createTablePromise, timeoutPromise]);
+    console.log('[DEBUG] Database table initialized successfully');
   } catch (error) {
-    console.error('[DEBUG] Error initializing database:', error);
-    // Don't throw - might already exist
+    console.error('[DEBUG] Error initializing database:', {
+      message: error.message,
+      code: error.code,
+      name: error.name
+    });
+    // Don't throw - might already exist or connection issue
   }
 }
 
-// Initialize on module load
-initDatabase();
+// Test database connection
+async function testConnection() {
+  try {
+    console.log('[DEBUG] Testing database connection...');
+    const testPromise = sql`SELECT 1 as test`;
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Connection test timeout')), 5000)
+    );
+    await Promise.race([testPromise, timeoutPromise]);
+    console.log('[DEBUG] Database connection test successful');
+    return true;
+  } catch (error) {
+    console.error('[DEBUG] Database connection test failed:', {
+      message: error.message,
+      code: error.code
+    });
+    return false;
+  }
+}
+
+// Initialize on module load (don't await - let it run in background)
+initDatabase().catch(err => {
+  console.error('[DEBUG] Failed to initialize database:', err);
+});
+
+// Test connection on startup
+testConnection().catch(err => {
+  console.error('[DEBUG] Connection test error:', err);
+});
 
 // Get user by WhatsApp phone number
 async function getUserByPhone(phoneNumber) {
   try {
     console.log(`[DEBUG] getUserByPhone called for ${phoneNumber}`);
-    const result = await sql`
+    console.log(`[DEBUG] Checking database connection...`);
+    
+    // Add timeout wrapper
+    const queryPromise = sql`
       SELECT * FROM users WHERE phone_number = ${phoneNumber}
     `;
+    
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Database query timeout after 10s')), 10000)
+    );
+    
+    console.log(`[DEBUG] Executing SQL query...`);
+    const result = await Promise.race([queryPromise, timeoutPromise]);
+    console.log(`[DEBUG] Query completed, rows: ${result.rows ? result.rows.length : 0}`);
     
     if (result.rows.length === 0) {
       console.log(`[DEBUG] No user found for ${phoneNumber}`);
       return null;
     }
-    console.log(`[DEBUG] Result:`, result);
     
+    console.log(`[DEBUG] User found, processing data...`);
     const user = result.rows[0];
     
     // Safely log user data (avoid logging JSONB directly as it can cause issues)
