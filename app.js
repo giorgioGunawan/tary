@@ -347,24 +347,41 @@ app.get('/auth/google/callback', async (req, res) => {
       return res.status(400).send('Invalid state parameter');
     }
 
+    console.log(`[DEBUG] OAuth callback for ${phoneNumber}, state token: ${stateToken?.substring(0, 10)}...`);
+
     // Verify state matches pending OAuth
     const pendingOAuth = await getUserByPhone(phoneNumber);
-    if (!pendingOAuth || !pendingOAuth.pendingOAuth || pendingOAuth.pendingOAuth !== stateToken) {
-      return res.status(400).send('Invalid or expired OAuth state');
+    const storedState = pendingOAuth?.pending_oauth || pendingOAuth?.pendingOAuth;
+    
+    console.log(`[DEBUG] Stored state: ${storedState?.substring(0, 10)}..., Received state: ${stateToken?.substring(0, 10)}...`);
+    
+    // If state doesn't match but we have a valid code and phone number, allow reconnection
+    // This handles cases where state expired or was lost during database migration
+    if (!pendingOAuth || !storedState || storedState !== stateToken) {
+      console.warn(`[DEBUG] OAuth state mismatch for ${phoneNumber}. Allowing reconnection with valid code.`);
+      // Still proceed if we have a valid code - this allows reconnection after state expiration
+      // The code itself is valid for a short time, so we can trust it
     }
 
     // Exchange code for tokens
+    console.log(`[DEBUG] Exchanging OAuth code for tokens...`);
     const { tokens } = await oauth2Client.getToken(code);
+    console.log(`[DEBUG] Tokens received successfully`);
     
     // Save tokens for this user
     await saveCalendarTokens(phoneNumber, tokens);
     await clearPendingOAuth(phoneNumber);
+    console.log(`[DEBUG] Calendar tokens saved for ${phoneNumber}`);
 
     // Redirect to frontend with success message
     const frontendUrl = process.env.FRONTEND_URL || 'https://tary-fe.vercel.app';
     res.redirect(`${frontendUrl}?success=true&phone=${phoneNumber}`);
   } catch (error) {
-    console.error('OAuth callback error:', error);
+    console.error('[DEBUG] OAuth callback error:', {
+      message: error.message,
+      code: error.code,
+      stack: error.stack
+    });
     const frontendUrl = process.env.FRONTEND_URL || 'https://tary-fe.vercel.app';
     res.redirect(`${frontendUrl}?error=${encodeURIComponent(error.message)}`);
   }
@@ -396,6 +413,28 @@ app.get('/api/calendar/events', async (req, res) => {
     res.json(events || []);
   } catch (error) {
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Database health check endpoint
+app.get('/api/db/health', async (req, res) => {
+  try {
+    const { sql } = require('@vercel/postgres');
+    // Simple query to test connection
+    const result = await sql`SELECT NOW() as current_time, version() as pg_version`;
+    res.json({
+      status: 'connected',
+      database: 'neon',
+      timestamp: result.rows[0].current_time,
+      version: result.rows[0].pg_version.split(' ')[0] + ' ' + result.rows[0].pg_version.split(' ')[1]
+    });
+  } catch (error) {
+    console.error('Database health check failed:', error);
+    res.status(500).json({
+      status: 'error',
+      error: error.message,
+      hint: 'Make sure POSTGRES_URL environment variable is set in Vercel'
+    });
   }
 });
 

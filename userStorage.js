@@ -1,6 +1,17 @@
 // Database storage using Vercel Postgres or Neon
 // Works with both @vercel/postgres (Vercel Postgres) and Neon
+// Supports POSTGRES_URL or DATABASE_URL environment variables
 const { sql } = require('@vercel/postgres');
+
+// Log connection status on startup (for debugging)
+if (!process.env.POSTGRES_URL && !process.env.DATABASE_URL) {
+  console.warn('[WARNING] No POSTGRES_URL or DATABASE_URL found. Database operations will fail.');
+  console.warn('[WARNING] Please add POSTGRES_URL environment variable in Vercel settings.');
+} else {
+  console.log('[INFO] Database connection string found:', 
+    (process.env.POSTGRES_URL || process.env.DATABASE_URL) ? 'Yes' : 'No'
+  );
+}
 
 // Initialize database table (idempotent - safe to call multiple times)
 async function initDatabase() {
@@ -44,10 +55,15 @@ async function getUserByPhone(phoneNumber) {
     if (user.google_calendar_tokens) {
       user.googleCalendarTokens = user.google_calendar_tokens;
     }
+    // Map snake_case to camelCase for compatibility
+    if (user.pending_oauth) {
+      user.pendingOAuth = user.pending_oauth;
+    }
     
     console.log(`[DEBUG] User found for ${phoneNumber}:`, {
       found: true,
-      hasTokens: !!user.google_calendar_tokens
+      hasTokens: !!user.google_calendar_tokens,
+      hasPendingOAuth: !!user.pending_oauth
     });
     
     return user;
