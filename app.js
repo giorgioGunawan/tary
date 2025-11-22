@@ -116,21 +116,33 @@ async function sendWhatsAppMessage(phoneNumberId, to, messageText) {
 
 // Function to get calendar events for a user
 async function getCalendarEvents(phoneNumber) {
+  console.log(`[DEBUG] getCalendarEvents called for ${phoneNumber}`);
   const user = await getUserByPhone(phoneNumber);
+  console.log(`[DEBUG] User data:`, {
+    exists: !!user,
+    hasTokens: !!(user && user.googleCalendarTokens),
+    tokenKeys: user && user.googleCalendarTokens ? Object.keys(user.googleCalendarTokens) : null
+  });
+  
   if (!user || !user.googleCalendarTokens) {
+    console.log(`[DEBUG] No user or tokens found for ${phoneNumber}`);
     return null;
   }
 
   try {
+    console.log(`[DEBUG] Setting OAuth credentials for ${phoneNumber}`);
     oauth2Client.setCredentials(user.googleCalendarTokens);
     
     // Refresh token if needed
     if (user.googleCalendarTokens.expiry_date && user.googleCalendarTokens.expiry_date <= Date.now()) {
+      console.log(`[DEBUG] Token expired, refreshing for ${phoneNumber}`);
       const { credentials } = await oauth2Client.refreshAccessToken();
       await saveCalendarTokens(phoneNumber, credentials);
       oauth2Client.setCredentials(credentials);
+      console.log(`[DEBUG] Token refreshed successfully`);
     }
 
+    console.log(`[DEBUG] Fetching calendar events from Google API`);
     const calendar = google.calendar({ version: 'v3', auth: oauth2Client });
     const { data } = await calendar.events.list({
       calendarId: 'primary',
@@ -140,9 +152,18 @@ async function getCalendarEvents(phoneNumber) {
       orderBy: 'startTime'
     });
 
+    console.log(`[DEBUG] Calendar API response:`, {
+      itemsCount: data.items ? data.items.length : 0,
+      hasItems: !!data.items
+    });
+
     return data.items || [];
   } catch (error) {
-    console.error('Error fetching calendar events:', error);
+    console.error(`[DEBUG] Error fetching calendar events for ${phoneNumber}:`, {
+      message: error.message,
+      code: error.code,
+      stack: error.stack
+    });
     throw error;
   }
 }
@@ -172,7 +193,14 @@ app.post('/', async (req, res) => {
               for (const message of change.value.messages) {
                 if (message.type === 'text') {
                   const senderPhone = message.from;
-                  const messageText = message.text.body.trim().toLowerCase();
+                  const originalMessage = message.text.body;
+                  const messageText = originalMessage.trim().toLowerCase();
+                  
+                  console.log(`[DEBUG] Received message from ${senderPhone}:`, {
+                    original: originalMessage,
+                    normalized: messageText,
+                    length: messageText.length
+                  });
                   
                   // Handle commands
                   if (messageText === '/link-calendar' || messageText === 'link calendar') {
@@ -192,9 +220,17 @@ app.post('/', async (req, res) => {
                       `Click this link to connect your Google Calendar:\n\n${authUrl}\n\nAfter connecting, I'll send you a confirmation message.`
                     );
                   } else if (messageText === '/calendar' || messageText === 'calendar' || messageText.startsWith('show calendar')) {
+                    console.log(`[DEBUG] Calendar command detected for ${senderPhone}`);
                     // Show upcoming calendar events
                     const user = await getUserByPhone(senderPhone);
+                    console.log(`[DEBUG] User lookup result:`, {
+                      userExists: !!user,
+                      hasTokens: !!(user && user.googleCalendarTokens),
+                      phoneNumber: senderPhone
+                    });
+                    
                     if (!user || !user.googleCalendarTokens) {
+                      console.log(`[DEBUG] No calendar linked for ${senderPhone}`);
                       await sendWhatsAppMessage(
                         phoneNumberId,
                         senderPhone,
@@ -202,8 +238,11 @@ app.post('/', async (req, res) => {
                       );
                     } else {
                       try {
+                        console.log(`[DEBUG] Fetching calendar events for ${senderPhone}`);
                         const events = await getCalendarEvents(senderPhone);
-                        if (events.length === 0) {
+                        console.log(`[DEBUG] Retrieved ${events ? events.length : 0} events`);
+                        
+                        if (!events || events.length === 0) {
                           await sendWhatsAppMessage(
                             phoneNumberId,
                             senderPhone,
@@ -216,18 +255,21 @@ app.post('/', async (req, res) => {
                             const date = new Date(start).toLocaleString();
                             eventsText += `${index + 1}. ${event.summary || '(No title)'}\n   ${date}\n\n`;
                           });
+                          console.log(`[DEBUG] Sending events response to ${senderPhone}`);
                           await sendWhatsAppMessage(phoneNumberId, senderPhone, eventsText);
                         }
                       } catch (error) {
+                        console.error(`[DEBUG] Error fetching calendar events for ${senderPhone}:`, error);
                         await sendWhatsAppMessage(
                           phoneNumberId,
                           senderPhone,
-                          'Sorry, I couldn\'t fetch your calendar events. Please try again later.'
+                          `Sorry, I couldn't fetch your calendar events. Error: ${error.message}`
                         );
                       }
                     }
                   } else {
                     // Default reply
+                    console.log(`[DEBUG] No command matched, sending default reply to ${senderPhone}`);
                     const replyText = `Hey ive read your message: ${message.text.body}`;
                     await sendWhatsAppMessage(phoneNumberId, senderPhone, replyText);
                   }
