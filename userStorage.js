@@ -1,9 +1,15 @@
 // Simple file-based storage for user data
 // In production, replace this with a proper database (PostgreSQL, MongoDB, etc.)
+// Note: Using /tmp for Vercel compatibility (writable filesystem)
+// WARNING: /tmp is ephemeral in serverless - data may not persist between invocations
+// For production, use a proper database like Vercel Postgres, MongoDB, etc.
 const fs = require('fs').promises;
 const path = require('path');
+const os = require('os');
 
-const STORAGE_FILE = path.join(__dirname, 'users.json');
+// Use /tmp in production (Vercel), local directory in development
+const STORAGE_DIR = process.env.VERCEL ? '/tmp' : __dirname;
+const STORAGE_FILE = path.join(STORAGE_DIR, 'users.json');
 
 // Initialize storage file if it doesn't exist
 async function initStorage() {
@@ -17,8 +23,25 @@ async function initStorage() {
 // Get all users
 async function getUsers() {
   await initStorage();
-  const data = await fs.readFile(STORAGE_FILE, 'utf8');
-  return JSON.parse(data);
+  try {
+    const data = await fs.readFile(STORAGE_FILE, 'utf8');
+    // Handle empty file
+    if (!data || data.trim() === '') {
+      return {};
+    }
+    return JSON.parse(data);
+  } catch (error) {
+    // If file doesn't exist, return empty object
+    if (error.code === 'ENOENT') {
+      return {};
+    }
+    // If JSON parse error, return empty object
+    if (error instanceof SyntaxError) {
+      console.warn('Corrupted users.json file, resetting:', error.message);
+      return {};
+    }
+    throw error;
+  }
 }
 
 // Get user by WhatsApp phone number
