@@ -416,24 +416,35 @@ app.get('/api/calendar/events', async (req, res) => {
   }
 });
 
-// Database health check endpoint
+// Storage health check endpoint
 app.get('/api/db/health', async (req, res) => {
   try {
-    const { sql } = require('@vercel/postgres');
-    // Simple query to test connection
-    const result = await sql`SELECT NOW() as current_time, version() as pg_version`;
+    const fs = require('fs').promises;
+    const path = require('path');
+    const os = require('os');
+    const storageFile = path.join(os.tmpdir(), 'tary-users.json');
+    
+    let stats;
+    try {
+      stats = await fs.stat(storageFile);
+    } catch (error) {
+      // File doesn't exist yet, that's okay
+      stats = null;
+    }
+    
     res.json({
       status: 'connected',
-      database: 'neon',
-      timestamp: result.rows[0].current_time,
-      version: result.rows[0].pg_version.split(' ')[0] + ' ' + result.rows[0].pg_version.split(' ')[1]
+      storage: 'file-based',
+      storagePath: storageFile,
+      fileExists: !!stats,
+      fileSize: stats ? stats.size : 0,
+      timestamp: new Date().toISOString()
     });
   } catch (error) {
-    console.error('Database health check failed:', error);
+    console.error('Storage health check failed:', error);
     res.status(500).json({
       status: 'error',
-      error: error.message,
-      hint: 'Make sure POSTGRES_URL environment variable is set in Vercel'
+      error: error.message
     });
   }
 });
