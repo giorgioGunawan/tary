@@ -1,0 +1,21 @@
+{
+  "name": "webhook-endpoint",
+  "version": "1.0.0",
+  "description": "Test webhook endpoint for receiving and logging webhook requests",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "keywords": [
+    "webhook",
+    "express",
+    "test"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^4.18.2",
+    "dotenv": "^16.3.1"
+  }
+}
+
